@@ -1,0 +1,170 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun 11 15:30:25 2024
+
+@author: Transcendent
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Spyder Editor
+
+This is a temporary script file.
+"""
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+from rdkit.Chem import rdMolDescriptors
+# from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import auc,roc_curve
+from sklearn.metrics import classification_report
+# from sklearn.preprocessing import StandardScaler 未使用标准化
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn import svm 
+
+from gensim.models import word2vec
+from mol2vec.features import mol2alt_sentence,mol2sentence,MolSentence,DfVec,sentences2vec
+
+data=pd.read_csv('EGFR_27100.csv')
+sns.countplot(data=data,x='active',orient='v')
+plt.ylabel('active')
+plt.xlabel('Count of values')
+plt.show()
+
+
+data['mol']=data['smiles'].apply(lambda x: Chem.MolFromSmiles(x))
+data=data.dropna(axis=0)
+data['tpsa']=data['mol'].apply(lambda x: rdMolDescriptors.CalcTPSA(x))
+data['mol_w']=data['mol'].apply(lambda x: Descriptors.ExactMolWt(x))
+data['num_valence_electrons']=data['mol'].apply(lambda x: Descriptors.NumValenceElectrons(x))
+data['num_heteroatoms']=data['mol'].apply(lambda x: Descriptors.NumHeteroatoms(x))
+
+y=data.active
+X=data[['tpsa','mol_w','num_valence_electrons','num_heteroatoms']]
+
+# x_542=X.iloc[:542,:]
+# x_542=StandardScaler().fit_transform(x_542)
+# y_542=y.iloc[:542]
+# 考虑到样本比例极度不平衡，曾尝试的活性样本过采样，后发现预训练lr模型性能优异，遂放弃
+# oversampler=SMOTE(random_state=0)
+# os_X,os_y=oversampler.fit_resample(X,y)
+# os_number_0=len(os_y[os_y==0])  #统计进行过采样后标签为0的个数
+# os_number_1=len(os_y[os_y==1])  #统计进行过采样后标签为1的个数
+# print(f"过采样后标签为0的个数：{os_number_0}")
+# print(f"过采样后标签为1的个数：{os_number_1}")
+X_train,X_test,y_train,y_test=train_test_split(X,y,test_size=.20,random_state=42)
+# X_train=StandardScaler().fit_transform(X_train)
+# X_test=StandardScaler().fit_transform(X_test)
+def graph(y_pred,y_test):
+    cm=pd.crosstab(y_pred, y_test)
+    sns.heatmap(cm,annot=True,cmap='GnBu',fmt='d')
+    plt.xlabel('Real')
+    plt.ylabel('Predict')
+    plt.show()
+
+def evaluation_class(model,X_test,y_test):
+    y_pred=model.predict(X_test)
+    preds=model.predict_proba(X_test)[:,1]
+
+    fpr,tpr,threshold=roc_curve(y_test, preds)
+    roc_auc=auc(fpr,tpr)
+    
+    plt.title(str(model)+' '+'roc curve',fontsize=14,fontweight='bold')
+    plt.plot(fpr, tpr,'g',label='AUC = %0.3f' % roc_auc)
+    plt.legend(loc='lower right')
+    plt.plot([0,1],[0,1],'r--')
+    plt.xlim([0,1])
+    plt.ylim([0,1])
+    plt.ylabel('True positive rate')
+    plt.xlabel('False positive rate')
+    plt.show()
+    print(round(roc_auc,4))
+    print(classification_report(y_test, y_pred))
+    graph(y_pred,y_test)
+    print()
+
+
+lr=LogisticRegression(max_iter=10000)
+lr.fit(X_train,y_train)
+print("lr ROC AUC score: ")
+evaluation_class(lr, X_test, y_test)
+
+rf=RandomForestClassifier(max_depth=2,random_state=0)
+rf.fit(X_train, y_train)
+print("rf ROC AUC score: ")
+evaluation_class(rf, X_test, y_test)
+
+svmc=svm.SVC(gamma='scale',C=1.0,decision_function_shape='ovr',kernel='rbf',probability=True)
+svmc.fit(X_train, y_train)
+print("svm ROC AUC score: ")
+evaluation_class(svmc, X_test, y_test)
+
+
+model=word2vec.Word2Vec.load('E:\model_300dim.pkl')
+data['sentence']=data.apply(lambda x: MolSentence(mol2alt_sentence(x['mol'],1)), axis=1) 
+data['mol2vec']=[DfVec(x) for x in sentences2vec(data['sentence'], model,unseen='UNK')]
+X_mol=np.array([x.vec for x in data['mol2vec']])
+X_mol=pd.DataFrame(X_mol)
+
+new_data=pd.concat((X,X_mol),axis=1)
+new_data_542=new_data.iloc[:542,:]
+
+# 考虑到样本比例极度不平衡，曾尝试的活性样本过采样，后发现预训练lr模型性能优异，遂放弃
+# oversampler=SMOTE(random_state=0)
+# os_x,os_y=oversampler.fit_resample(new_data,y)
+x_train,x_test,y_train,y_test=train_test_split(new_data,y,test_size=.20,random_state=1)
+# x_train=StandardScaler().fit_transform(x_train)
+# x_test=StandardScaler().fit_transform(x_test)
+MOl2vec_lr=LogisticRegression(max_iter=10000)
+MOl2vec_lr.fit(x_train, y_train)
+print(pd.Series(MOl2vec_lr.predict(new_data_542)).value_counts())
+print("MOl2vec_lr ROC AUC score: ")
+evaluation_class(MOl2vec_lr, x_train, y_train)
+evaluation_class(MOl2vec_lr, x_test, y_test)
+
+MOl2vec_rf=RandomForestClassifier(max_depth=2,random_state=0)
+MOl2vec_rf.fit(x_train, y_train)
+print("MOl2vec_rf ROC AUC score: ")
+evaluation_class(MOl2vec_rf, x_test, y_test)
+
+MOl2vec_svmc=svm.SVC(gamma='scale',C=1.0,decision_function_shape='ovr',kernel='rbf',probability=True)
+MOl2vec_svmc.fit(x_train, y_train)
+print("MOl2vec_svm ROC AUC score: ")
+evaluation_class(MOl2vec_svmc, x_test, y_test)
+
+
+
+# 分子筛选，首先挑选数据集里10个预测活性概率最高的分子
+preds=MOl2vec_lr.predict_proba(new_data_542)[:,0].tolist() #预测分子为活性的概率
+index=[]
+for i in range(len(preds)):
+    index.append(preds.index(sorted(preds, reverse=True)[i])) #排序，降序排列，活性高的概率在前
+print(MOl2vec_lr.predict_proba(x_train))
+print(index[:10]) #挑选10个
+data.iloc[index[:10]].to_csv('分子筛选.csv')
+
+
+
+# 上面筛选分子后，数据库查询相似分子，做活性预测
+data2=pd.read_csv('E:\对接前预测.csv')
+data2['mol']=data2['smiles'].apply(lambda x: Chem.MolFromSmiles(x))
+data2['tpsa']=data2['mol'].apply(lambda x: rdMolDescriptors.CalcTPSA(x))
+data2['mol_w']=data2['mol'].apply(lambda x: Descriptors.ExactMolWt(x))
+data2['num_valence_electrons']=data2['mol'].apply(lambda x: Descriptors.NumValenceElectrons(x))
+data2['num_heteroatoms']=data2['mol'].apply(lambda x: Descriptors.NumHeteroatoms(x))
+
+z=data2[['tpsa','mol_w','num_valence_electrons','num_heteroatoms']]
+
+data2['sentence']=data2.apply(lambda x: MolSentence(mol2alt_sentence(x['mol'],1)), axis=1) 
+data2['mol2vec']=[DfVec(x) for x in sentences2vec(data2['sentence'], model,unseen='UNK')]
+z_mol=np.array([x.vec for x in data2['mol2vec']])
+z_mol=pd.DataFrame(z_mol)
+new_data2=pd.concat((z,z_mol),axis=1)
+
+predict=MOl2vec_lr.predict(new_data2)
+print(predict)
